@@ -1,0 +1,43 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Accueil
+{% endblock %}
+{% block body %}
+	<h1>Liste des livres</h1>
+	<div class="d-flex justify-content-end mb-3">
+		<form method="get" action="{{ path('admin_livres') }}" class="d-flex">
+			<input type="text" name="title" class="form-control me-2" placeholder="Rechercher par titre">
+			<button type="submit" class="btn btn-primary">Rechercher</button>
+		</form>
+		<a href="{{url('admin_livres_add')}}" class="btn btn-primary ms-3">Ajouter un Livre</a>
+	</div>
+	<table class="table">
+		<tr>
+			<th>Titre</th>
+			<th>ISBN</th>
+			<th>Editeur</th>
+			<th>Date Edition</th>
+			<th>Prix(DT)</th>
+			<th colspan="3">Action</th>
+		</tr>
+
+		{% for livre in livres %}
+			<tr>
+				<td>{{livre.titre|capitalize}}</td>
+				<td>{{livre.isbn}}</td>
+				<td>{{livre.editeur}}</td>
+				<td>{{livre.editedAt|date('d-m-Y')}}</td>
+				<td>{{livre.prix}}</td>
+				<td>
+					<a href="{{url('app_livre',{'id':livre.id})}}" class="btn btn-success btn-sm">Voir détail...</a>
+				</td>
+				<td>
+					<a href="{{ url('app_admin_livres_delete',{'id':livre.id}) }}" class="btn btn-danger btn-sm">Supprimer</a>
+				</td>
+				<td>
+					<a href="{{ url('admin_livres_edit',{'id':livre.id})}}" class="btn btn-primary btn-sm">Editer</a>
+				</td>
+			</tr>
+		{% endfor %}
+	</table>
+{% endblock %}

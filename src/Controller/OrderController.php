@@ -1,0 +1,322 @@
+<?php
+
+namespace App\Controller;
+use Symfony\Component\VarDumper\VarDumper; // Import VarDumper
+use App\Entity\Loi;
+use App\Entity\Entreprise;
+use App\Entity\Order;
+use App\Entity\OrderDetails;
+
+use App\Repository\LoiRepository;
+use App\Repository\EntrepriseRepository;
+
+use App\Repository\EtatOrderRepository;
+use App\Repository\LivresRepository;
+use App\Repository\OrderRepository;
+use App\Repository\PayementTypeRepository;
+use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\Session\SessionInterface;
+use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Mailer\MailerInterface;
+use Symfony\Component\Mime\Email;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+
+#[Route('/commande', name: 'app_order_')]
+class OrderController extends AbstractController
+{
+    #[Route('/ajout', name: 'add')]
+    public function add(SessionInterface $session,LivresRepository $rep,Request $req,PayementTypeRepository $repPT,EtatOrderRepository $repEO,EntityManagerInterface $em,MailerInterface $mailer): Response
+    {
+
+        $panier=$session->get('panier',[]);
+        if($panier === []){
+            $this->addFlash('message_error','Votre panier est vide');
+            return $this->redirectToRoute('app_home');
+        }
+
+        $total = 0;
+        foreach ($panier as $item=>$quantity){
+            $livre=$rep->find($item);
+            $price=$livre->getPrix();
+            $total += $price * $quantity;
+        }
+        
+        // convertir total to string
+        $total = number_format(($total)*1000,0,'.','');
+    
+        switch ($req->query->get('payment')) {
+            case 'flouci':
+                // url de base de l'application et les urls de redirection
+                $baseUrl = $this->generateUrl('app_home', [], UrlGeneratorInterface::ABSOLUTE_URL);
+                $successUrl = $baseUrl . "commande/flousi/check/success";
+                $faildUrl = $baseUrl . "commande/flousi/check/faild";
+                //  Appel de l'API Flouci pour générer le lien de paiement
+                $curl = curl_init();
+                curl_setopt_array($curl, array(
+                    CURLOPT_URL => 'https://developers.flouci.com/api/generate_payment',
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_ENCODING => '',
+                    CURLOPT_MAXREDIRS => 10,
+                    CURLOPT_TIMEOUT => 0,
+                    CURLOPT_FOLLOWLOCATION => true,
+                    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+                    CURLOPT_CUSTOMREQUEST => 'POST',
+                    CURLOPT_POSTFIELDS =>'{
+                        "app_token": "47cd34e3-673d-40cf-a355-6629051f6a28",
+                        "app_secret": "91ffd6c4-7b31-4f7b-901c-d7d7793249e0",
+                        "accept_card": "true",
+                        "amount": '.$total.',
+                        "success_link": "'.$successUrl.'",
+                        "fail_link": "'.$faildUrl.'",
+                        "session_timeout_secs": 1200,
+                        "developer_tracking_id": "0145f11b-2ba1-4b5c-8973-17ee36aedea7"
+                    }',
+                    CURLOPT_HTTPHEADER => array(
+                        'Content-Type: application/json'
+                    ),
+                ));
+
+                $response = curl_exec($curl);
+                curl_close($curl);
+                $response = json_decode($response,true);
+                
+                if($response['code']==0){
+                    $session->set('payment_id',$response['result']['payment_id']);
+                    return $this->redirect($response['result']['link']);
+                }else{
+                    $this->addFlash('message_error','Commande echouée ');
+                    return $this->redirectToRoute('app_home');
+                }
+            case 'cod':
+                $order = new Order();
+                $order->setUser($this->getUser());
+                $order->setReference(uniqid());
+                foreach ($panier as $item=>$quantity){
+                    $ordeDetails=new OrderDetails();
+                    $livre=$rep->find($item);
+                    $price=$livre->getPrix();
+                    $ordeDetails->setLivre($livre);
+                    $ordeDetails->setPrice($price);
+                    $ordeDetails->setQuantity($quantity);
+                    $order->addOrderDetail($ordeDetails);
+                    $order->setPayementType($repPT->findOneBy(['type'=>'COD']));
+                }
+                    $order->setEtatPayement(false);
+                    $order->setEtat($repEO->findOneBy(['etat'=>'en attente']));     
+                    $session->remove('panier');
+                    $this->addFlash('message','Commande créée avec succès ');
+                    $email = (new Email())
+                        ->from('Morchid@admin.com')
+                        ->to($this->getUser()->getUserIdentifier())
+                        ->subject('Commande créée avec succès '.$order->getReference())
+                        ->text('Facture de votre commande '.$order->getReference())
+                        ->html($this->renderView('cart/facture.html.twig', ['order' => $order]));
+                return $this->redirectToRoute('app_home');            
+            default:
+                $this->addFlash('message_error','Commande echouée ');
+                return $this->redirectToRoute('app_home');
+        }
+    }
+
+     // Ajoutez cette méthode
+     #[Route('/mes_commande', name: 'index')]
+     public function index(OrderRepository $orderRepository): Response
+     {
+         $this->denyAccessUnlessGranted('ROLE_USER');
+ 
+         $orders = $orderRepository->findBy(['user' => $this->getUser()],['create_at'=>'DESC']);
+
+         return $this->render('cart/order.html.twig', [
+             'orders' => $orders,
+         ]);
+     }
+/////////////////////////////////////////////////////////////////////////////////
+
+
+     #[Route('/flousi/check/{etat}', name: 'flouci_check')]
+     public function flouciCheck(
+         SessionInterface $session,
+         LivresRepository $rep,
+         EntityManagerInterface $em,
+         $etat,
+         Request $req,
+         PayementTypeRepository $repPT,
+         EtatOrderRepository $repEO,
+         MailerInterface $mailer,
+         LoiRepository $loiRepository,
+         EntrepriseRepository $entrepriseRepository
+     ): Response {
+         $panier = $session->get('panier', []);
+         $payment_id = $req->query->get('payment_id');
+ 
+         $order = new Order();
+         $order->setUser($this->getUser());
+         $order->setReference(uniqid());
+ 
+         foreach ($panier as $item => $quantity) {
+             $orderDetails = new OrderDetails();
+             $livre = $rep->find($item);
+             $price = $livre->getPrix();
+             $orderDetails->setLivre($livre);
+             $orderDetails->setPrice($price);
+             $orderDetails->setQuantity($quantity);
+             $order->addOrderDetail($orderDetails);
+             $order->setPayementType($repPT->findOneBy(['type' => 'FLOUCI']));
+         }
+ 
+         if ($etat == "success" && $payment_id == $session->get('payment_id')) {
+             $order->setEtatPayement(true);
+             $order->setEtat($repEO->findOneBy(['etat' => 'confirmer']));
+             $session->remove('panier');
+             $email = (new Email())
+                 ->from('Morchid@admin.com')
+                 ->to("abc@abc.com")
+                 ->subject('Commande créée avec succès ' . $order->getReference())
+                 ->text('Facture de votre commande ' . $order->getReference())
+                 ->html($this->renderView('cart/facture.html.twig', ['order' => $order]));
+ 
+             $content = '';
+             foreach ($panier as $element => $quantity) {
+                 if ($element == 1) {
+                     $codes = $loiRepository->findUnretrieved($quantity);
+                     foreach ($codes as $code) {
+                         $content .= 'Loi: ' . $code->getCode() . "\n";
+                         $code->setRetrieved(true);
+                         $em->persist($code);
+                     }
+                 } elseif ($element == 2) {
+                     $codes = $entrepriseRepository->findUnretrieved($quantity);
+                     foreach ($codes as $code) {
+                         $content .= 'Entreprise: ' . $code->getCode() . "\n";
+                         $code->setRetrieved(true);
+                         $em->persist($code);
+                     }
+                 }
+             }
+             $em->flush();
+ 
+             $response = new Response($content);
+             $response->headers->set('Content-Type', 'text/plain');
+             $response->headers->set('Content-Disposition', 'attachment;filename="success.txt"');
+ 
+             $x= $content;
+         } else {
+             $this->addFlash('message_error', 'Commande échouée');
+         }
+         $session->remove('payment_id');
+         $this->addFlash('message', $x);
+
+         return $this->redirectToRoute('app_home');
+     }
+    
+     ////////////////////////////////////////////////////////////////////////////////
+    #[Route('/demande/facture/{id}/{email}', name: 'demande_facture_email')]
+    public function demandeFactureEmail(OrderRepository $orderRepository, $id,$email , MailerInterface $mailer ): Response
+    {
+        $order = $orderRepository->find($id);
+
+        if($order == null){
+            $this->addFlash('message_error','Commande introuvable');
+            return $this->redirectToRoute('app_order_index');
+        }
+        
+        $email = (new Email())
+            ->from('Morchid@admin.com')
+            ->to($email)
+            ->subject('Facture de votre commande '.$order->getReference())
+            // send template
+            ->html($this->renderView('cart/facture.html.twig', ['order' => $order]));
+            
+        
+        $this->addFlash('message','Demande envoyée avec succès');
+        return $this->redirectToRoute('app_order_index');
+    }
+
+    // gestion des commandes
+    #[Route('/gestion', name: 'gestion')]
+    public function gestion(OrderRepository $orderRepository,EtatOrderRepository $etatOrderRepository): Response
+    {
+        $this->denyAccessUnlessGranted('ROLE_ADMIN');
+
+        $orders = $orderRepository->findAll();
+        $etatOrders = $etatOrderRepository->findAll();
+        return $this->render('order/gestion.html.twig', [
+            'orders' => $orders,
+            'etatOrders' => $etatOrders
+        ]);
+    }
+
+    // changer l'état de la commande
+    #[Route('/update/etat/{id}/{etat}', name: 'update_etat')]
+    public function updateEtat(OrderRepository $orderRepository,EtatOrderRepository $etatOrderRepository, $id,$etat,EntityManagerInterface $em,MailerInterface $mailer): Response
+    {
+        $this->denyAccessUnlessGranted('ROLE_ADMIN');
+
+        $order = $orderRepository->find($id);
+        $etatOrder = $etatOrderRepository->findOneBy(['id'=>$etat]);
+        if($order == null || $etatOrder == null){
+            $this->addFlash('message_error','Commande introuvable');
+            return $this->redirectToRoute('app_order_gestion');
+        }
+        $order->setEtat($etatOrder);
+        if($etatOrder->getEtat() == 'livré'){
+            $order->setEtatPayement(true);
+        }
+        $em->flush();
+        $this->addFlash('message','Etat de la commande modifié avec succès');
+
+        $email = (new Email())
+            ->from('Morchid@gmail.com')
+            ->to($order->getUser()->getUserIdentifier())
+            ->subject('Etat de votre commande '.$order->getReference())
+            ->html('<h3>Etat de votre commande <span style="color:blue;">'.$order->getReference().'</span> a été modifié à <span style="color:green;">'.$etatOrder->getEtat().'</span></h3>');
+        $this->addFlash('message','Etat de la commande modifié avec succès');
+        return $this->redirectToRoute('app_order_gestion');
+    }
+
+    // changer l'état de payement de la commande
+    #[Route('/update/payement/{id}/{etat}', name: 'update_payement')]
+    public function updatePayement(OrderRepository $orderRepository, $id,$etat,EntityManagerInterface $em,MailerInterface $mailer): Response
+    {
+        $this->denyAccessUnlessGranted('ROLE_ADMIN');
+
+        $order = $orderRepository->find($id);
+        if($order == null){
+            $this->addFlash('message_error','Commande introuvable');
+            return $this->redirectToRoute('app_order_gestion');
+        }
+
+        $order->setEtatPayement($etat);
+        $em->flush();
+        $this->addFlash('message','Etat de payement de la commande modifié avec succès');
+        // send email to user 'etat de payement de la commande modifié'
+        $etat = $etat ? 'payé' : 'non payé';
+        $email = (new Email())
+            ->from('Morchid@gmail.com')
+            ->to($order->getUser()->getUserIdentifier())
+            ->subject('Etat de payement de votre commande '.$order->getReference())
+            ->html('<h3>Etat de payement de votre commande <span style="color:blue;">'.$order->getReference().'</span> a été modifié à <span style="color:green;">'.$etat.'</span></h3>');
+        $this->addFlash('message','Etat de payement de la commande modifié avec succès');
+        return $this->redirectToRoute('app_order_gestion');
+    }
+
+    // consulter les détails de la commande (order_consulter 'id')
+    #[Route('/consulter/{id}', name: 'consulter')]
+    public function consulter(OrderRepository $orderRepository, $id): Response
+    {
+        $this->denyAccessUnlessGranted('ROLE_ADMIN');
+
+        $order = $orderRepository->find($id);
+        if($order == null){
+            $this->addFlash('message_error','Commande introuvable');
+            return $this->redirectToRoute('app_order_gestion');
+        }
+        return $this->render('order/consulter.html.twig', [
+            'order' => $order
+        ]);
+    }
+}

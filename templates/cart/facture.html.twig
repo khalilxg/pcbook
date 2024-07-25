@@ -1,0 +1,17 @@
+<div>
+    <h1 style="text-align: center;">Facture</h1>
+    <p>Commande N°: {{ order.id }}</p>
+    <p>Date: {{ order.createAt|date('d/m/Y H:i') }}</p>
+    <p>Merci pour votre solidarité</p>
+    <p>Etat de paiement: {{ order.etatPayement == 1 ? 'Payée' : 'Non payée' }}</p>
+    <p>Total: {{ order.getTotal() }} TND</p>
+    <p>Produits:</p>
+    <ul>
+        {% for detail in order.orderDetails %}
+            <li>{{ detail.livre.titre }} - {{ detail.quantity }} x {{ detail.price }} TND</li>
+        {% endfor %}
+    </ul>
+
+    <p style="text-align: center;">Merci pour votre achat! A bientôt!</p>
+    <p style="text-align: center;">SympaBook</p>
+</div>
