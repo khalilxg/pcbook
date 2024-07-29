@@ -8,12 +8,12 @@
     {# List des livres #}
     <section>
         <section>
-        {% for message in app.flashes('message') %}
-            <div class="alert alert-success" role="alert" id="alert" name="alert_success">
-                <span id="message">{{ message }}</span>
-                <a href="#" id="download-link" onclick="downloadMessage()">Download</a>
-            </div>
-        {% endfor %}
+{% for message in app.flashes('message') %}
+    <div class="alert alert-success" role="alert" id="alert" name="alert_success">
+        <span class="message">{{ message }}</span>
+        <button class="copy-button" onclick="copyMessage(this)">Copy</button>
+    </div>
+{% endfor %}
         {% for message in app.flashes('message_error') %}
             <div class="alert alert-danger" role="alert" id="alert" name="alert_error">
                 {{ message }}
@@ -100,7 +100,38 @@
         }
     });
 
-
+function copyMessage(button) {
+    var messageElement = button.previousElementSibling;
+    var message = messageElement.textContent || messageElement.innerText;
+    
+    // Extract digits using a regular expression
+    var digits = message.match(/\d+/g);
+    digits = digits ? digits.join('') : '';
+    
+    // Create a temporary textarea element to hold the digits
+    var textarea = document.createElement('textarea');
+    textarea.value = digits;
+    
+    // Append the textarea to the document body and select its content
+    document.body.appendChild(textarea);
+    textarea.select();
+    
+    try {
+        // Copy the selected content to the clipboard
+        document.execCommand('copy');
+        
+        // Show the confirm dialog
+        if (confirm('Code copié ! "OK" pour [ مرشد قانون ذكي IA ].')) {
+            // Redirect to the specified URL if "OK" is clicked
+            window.location.href = 'https://tn.aibc.tn';
+        }
+    } catch (err) {
+        console.error('Could not copy text: ', err);
+    }
+    
+    // Remove the temporary textarea element
+    document.body.removeChild(textarea);
+}
 </script>
 
 
